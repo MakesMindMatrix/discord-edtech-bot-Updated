@@ -41,4 +41,6 @@ build/
 *.egg-info/
 
 #
-config.py
+# config.py
+
+missing_records_oa_to_send_ol.csv

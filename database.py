@@ -80,6 +80,13 @@ class Database:
             except Exception:
                 pass  # Column already exists
             
+            # Add group_id column for sub-batch assignment (G1, G2, G3, G4, G5)
+            try:
+                await conn.execute("ALTER TABLE students ADD COLUMN group_id TEXT")
+                logger.info("Added 'group_id' column to existing database")
+            except Exception:
+                pass  # Column already exists
+            
             # OTP storage table - Temporary OTP codes
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS otp_codes (
@@ -186,11 +193,11 @@ class Database:
                 return False
     
     async def unverify_student(self, discord_id: int) -> bool:
-        """Remove verification from a student by Discord ID"""
+        """Remove verification from a student by Discord ID (also clears group_id)"""
         async with aiosqlite.connect(self.db_path) as conn:
             try:
                 await conn.execute(
-                    "UPDATE students SET discord_id = NULL, is_verified = 0, verified_at = NULL WHERE discord_id = ?",
+                    "UPDATE students SET discord_id = NULL, is_verified = 0, verified_at = NULL, group_id = NULL WHERE discord_id = ?",
                     (discord_id,)
                 )
                 await conn.commit()
@@ -243,6 +250,96 @@ class Database:
             if row:
                 return (row[0], row[1], row[2])
             return (None, None, None)
+    
+    async def get_verified_count_in_batch(self, university: str, course: str, batch: str) -> int:
+        """Count verified students in a batch (for group assignment)"""
+        u = university or ""
+        b = batch or ""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute(
+                """
+                SELECT COUNT(*) FROM students
+                WHERE COALESCE(university, '') = ? AND course = ? AND COALESCE(batch, '') = ?
+                  AND is_verified = 1
+                """,
+                (u, course, b)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+    
+    async def get_group_counts_for_batch(
+        self, university: str, course: str, batch: str
+    ) -> dict:
+        """
+        Get count of verified students per group_id for a (university, course, batch).
+        Returns {'G1': n, 'G2': n, 'G3': n, 'G4': n, 'G5': n} for auto-assignment.
+        """
+        u = university or ""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """
+                SELECT COALESCE(group_id, '') as g, COUNT(*) as cnt
+                FROM students
+                WHERE COALESCE(university, '') = ? AND course = ? AND COALESCE(batch, '') = ?
+                  AND is_verified = 1 AND group_id IS NOT NULL AND group_id != ''
+                GROUP BY UPPER(TRIM(group_id))
+                """,
+                (u, course, batch),
+            )
+            rows = await cursor.fetchall()
+        # Normalize to G1..G5 keys
+        counts = {f"G{i}": 0 for i in range(1, 6)}
+        for row in rows:
+            g = str(row["g"]).strip().upper()
+            if g in counts:
+                counts[g] = row["cnt"]
+        return counts
+
+    async def set_student_group_id(self, email: str, group_id: str) -> bool:
+        """Set group_id for a student (e.g., G1, G2, G3, G4, G5)"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            try:
+                await conn.execute(
+                    "UPDATE students SET group_id = ? WHERE LOWER(email) = LOWER(?)",
+                    (str(group_id), email)
+                )
+                await conn.commit()
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to set group_id for {email}: {e}")
+                return False
+    
+    async def get_verified_students_grouped_by_batch(self) -> dict:
+        """
+        Get all verified students grouped by (university, course, batch).
+        Returns: {(university, course, batch): [(id, email, discord_id, verified_at), ...]}
+        Ordered by verified_at for consistent group assignment.
+        """
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """
+                SELECT id, email, discord_id, university, course, batch, verified_at
+                FROM students
+                WHERE is_verified = 1 AND discord_id IS NOT NULL
+                ORDER BY university, course, batch, verified_at, id
+                """
+            )
+            rows = await cursor.fetchall()
+        
+        result = {}
+        for row in rows:
+            key = (row["university"] or "", row["course"] or "", row["batch"] or "")
+            if key not in result:
+                result[key] = []
+            result[key].append({
+                "id": row["id"],
+                "email": row["email"],
+                "discord_id": row["discord_id"],
+                "verified_at": row["verified_at"]
+            })
+        return result
     
     # ============================================
     # OTP OPERATIONS
@@ -377,16 +474,24 @@ class Database:
                 "pending_otps": pending or 0
             }
     
-    async def add_student(self, email: str, name: str, course: str, batch: str = "", university: str = "") -> bool:
-        """Add a new student to the database (supports 5-column CSV format with university)"""
+    async def add_student(
+        self,
+        email: str,
+        name: str,
+        course: str,
+        batch: str = "",
+        university: str = "",
+        group_id: str = "",
+    ) -> bool:
+        """Add a new student to the database (CSV format: name, email, university, course, batch, group)"""
         async with aiosqlite.connect(self.db_path) as conn:
             try:
                 await conn.execute(
                     """
-                    INSERT INTO students (email, name, university, course, batch)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO students (email, name, university, course, batch, group_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (email, name, university, course, batch)
+                    (email, name, university, course, batch, (group_id or "").strip().upper() or None),
                 )
                 await conn.commit()
                 return True

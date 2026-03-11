@@ -13,6 +13,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import config
+from database import init_database
+from create_sub_batches import migrate_groups
 
 # Load environment variables
 load_dotenv()
@@ -20,8 +22,8 @@ load_dotenv()
 # ============================================
 # LOGGING SETUP
 # ============================================
-# Create logs directory if it doesn't exist
 os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +59,17 @@ async def on_ready():
     """Called when the bot successfully connects to Discord"""
     logger.info(f"Bot logged in as {bot.user.name} (ID: {bot.user.id})")
     logger.info(f"Connected to {len(bot.guilds)} guild(s)")
-    
+
+    # Run create_sub_batches once (creates G1–G5 roles/channels, assigns verified students)
+    async def run_migrate_once():
+        try:
+            await migrate_groups(bot)
+            logger.info("create_sub_batches: finished")
+        except Exception as e:
+            logger.exception("create_sub_batches failed: %s", e)
+
+    asyncio.create_task(run_migrate_once())
+
     # Set bot status
     activity = discord.Activity(
         type=discord.ActivityType.watching,
@@ -151,9 +163,11 @@ async def load_extensions():
 # ============================================
 async def main():
     """Main function to run the bot"""
+    await init_database()
+
     async with bot:
         await load_extensions()
-        
+
         token = os.getenv("DISCORD_TOKEN")
         if not token:
             logger.critical("DISCORD_TOKEN not found in environment variables!")

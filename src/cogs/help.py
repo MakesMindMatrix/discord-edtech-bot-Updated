@@ -37,6 +37,11 @@ class HelpView(discord.ui.View):
             value="Request a new OTP code if the previous one expired",
             inline=False
         )
+        embed.add_field(
+            name="/my-group",
+            value="Sync all your roles and view all assigned channels (course, batch, group)",
+            inline=False
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
     
     @discord.ui.button(label="FAQ", style=discord.ButtonStyle.secondary, emoji="❓")
@@ -62,7 +67,12 @@ class HelpView(discord.ui.View):
         )
         embed.add_field(
             name="How do I access course channels?",
-            value="After verification, you'll automatically get access to your enrolled course channels.",
+            value="After verification, you get access to announcements, discussions, batch channel, and your group. Use `/my-group` to sync if any are missing.",
+            inline=False
+        )
+        embed.add_field(
+            name="Where are my channels?",
+            value="Use `/my-group` to sync roles and see all your channels (announcements, discussions, batch-official, group).",
             inline=False
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -90,7 +100,7 @@ class HelpView(discord.ui.View):
         )
         embed.add_field(
             name="/unverify",
-            value="Remove verification from a user\n`/unverify user:@User`",
+            value="Remove verification by email — removes all roles\n`/unverify email:student@example.com`",
             inline=False
         )
         embed.add_field(
@@ -100,7 +110,7 @@ class HelpView(discord.ui.View):
         )
         embed.add_field(
             name="/add-student",
-            value="Add a student to the database\n`/add-student email:email@example.com name:John Doe course:Course A`",
+            value="Add a student (all CSV fields)\n`/add-student name:... email:... university:... course:... batch:... group:G1`",
             inline=False
         )
         embed.add_field(
@@ -134,7 +144,7 @@ class Help(commands.Cog):
         
         embed.add_field(
             name="📚 Quick Commands",
-            value="`/verify` - Start verification\n`/otp` - Enter OTP code\n`/help` - Show this menu",
+            value="`/verify` - Start verification\n`/otp` - Enter OTP code\n`/my-group` - Sync roles & view all channels\n`/help` - Show this menu",
             inline=False
         )
         

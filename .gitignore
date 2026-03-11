@@ -11,17 +11,18 @@ venv/
 env/
 .venv/
 
-
 # Logs
-*.log
-logs/
+logs/*
+!logs/.gitkeep
 
-# Database
+# Database and CSV — user uploads manually
 *.db
 *.sqlite3
+*.csv
 
-# Data
-data/
+# data/ folder — ignore contents, keep .gitkeep for structure
+data/*
+!data/.gitkeep
 
 # VS Code
 .vscode/
@@ -39,8 +40,3 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
-
-#
-# config.py
-
-missing_records_oa_to_send_ol.csv

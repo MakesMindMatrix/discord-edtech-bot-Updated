@@ -184,6 +184,33 @@ class Admin(commands.Cog):
             else:
                 logger.warning(f"Batch role '{batch_role_name}' not found. Run verification first to auto-create.")
         
+        # 4. Handle Group role (G1–G5 from DB/CSV) - e.g. VTU-Ascenders-G1
+        group_id = student.get("group_id")
+        if batch and course and group_id:
+            try:
+                verification_cog = self.bot.get_cog("Verification")
+                if verification_cog and hasattr(verification_cog, "ensure_group_role"):
+                    group_role = await verification_cog.ensure_group_role(
+                        interaction.guild, university or "", batch, str(group_id)
+                    )
+                    if group_role:
+                        roles_to_add.append(group_role)
+                        role_names.append(group_role.name)
+                        group_category = await verification_cog.ensure_group_category(
+                            interaction.guild, university or "", course
+                        )
+                        if group_category and hasattr(verification_cog, "ensure_group_channel"):
+                            await verification_cog.ensure_group_channel(
+                                interaction.guild,
+                                group_category,
+                                university or "",
+                                batch,
+                                str(group_id),
+                                group_role
+                            )
+            except Exception as e:
+                logger.warning(f"Group assignment failed for force-verify {email}: {e}")
+        
         try:
             if roles_to_add:
                 await user.add_roles(*roles_to_add, reason=f"Force verified by {interaction.user.name}")
@@ -207,6 +234,10 @@ class Admin(commands.Cog):
             embed.add_field(name="Batch", value=batch, inline=True)
         if role_names:
             embed.add_field(name="Roles Assigned", value=", ".join(role_names), inline=False)
+        if batch and course:
+            student_after = await db.get_student_by_email(email)
+            if student_after and student_after.get("group_id"):
+                embed.add_field(name="Discussion Group", value=f"Group {student_after['group_id']}", inline=True)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
         
@@ -215,60 +246,44 @@ class Admin(commands.Cog):
     # ============================================
     # UNVERIFY COMMAND
     # ============================================
-    @app_commands.command(name="unverify", description="Remove verification from a user (Admin only)")
-    @app_commands.describe(
-        user="The Discord user to unverify",
-        email="Or unverify by email address"
-    )
+    @app_commands.command(name="unverify", description="Remove verification by email — removes all roles and access (Admin only)")
+    @app_commands.describe(email="The student's registered email address")
     @app_commands.default_permissions(administrator=True)
     async def unverify(
-        self, 
-        interaction: discord.Interaction, 
-        user: Optional[discord.Member] = None,
-        email: Optional[str] = None
+        self,
+        interaction: discord.Interaction,
+        email: str,
     ):
-        """Remove verification from a user and ALL related roles"""
+        """Remove verification by email — removes all roles (verified, course, batch, group) and access to channels"""
         await interaction.response.defer(ephemeral=True)
-        
-        # Must provide at least one option
-        if not user and not email:
-            await interaction.followup.send("❌ Please provide either a **user** or **email**.", ephemeral=True)
-            return
-        
-        # Get student data
-        student = None
-        if user:
-            student = await db.get_student_by_discord_id(user.id)
-        elif email:
-            email = email.strip().lower()
-            student = await db.get_student_by_email(email)
+
+        email = email.strip().lower()
+        student = await db.get_student_by_email(email)
         
         if not student:
-            await interaction.followup.send("❌ No verified record found.", ephemeral=True)
+            await interaction.followup.send("❌ No record found for this email.", ephemeral=True)
             return
-        
+
         if not student.get("is_verified") or not student.get("discord_id"):
             await interaction.followup.send("❌ This student is not currently verified.", ephemeral=True)
             return
-        
-        # Get the Discord member if we only have email
+
         discord_id = student.get("discord_id")
+        user = interaction.guild.get_member(discord_id)
         if not user:
-            user = interaction.guild.get_member(discord_id)
-            if not user:
-                # User left the server but still in DB - just clear DB
-                await db.unverify_student(discord_id)
-                await interaction.followup.send(
-                    f"✅ **Database cleared**\n\nEmail `{student.get('email')}` unverified.\n"
-                    f"(User not in server, no roles to remove)",
-                    ephemeral=True
-                )
-                return
-        
-        # Get the student's university, course and batch to identify which roles to remove
+            await db.unverify_student(discord_id)
+            await interaction.followup.send(
+                f"✅ **Database cleared**\n\nEmail `{student.get('email')}` unverified.\n"
+                f"(User not in server, no roles to remove)",
+                ephemeral=True
+            )
+            return
+
+        # Get the student's university, course, batch, group to identify which roles to remove
         university = student.get("university", "")  # University
         course = student.get("course", "")  # Category name
         batch = student.get("batch", "")    # Batch name
+        group_id = student.get("group_id")  # Sub-batch group
         
         # Remove from database
         await db.unverify_student(user.id)
@@ -309,6 +324,18 @@ class Admin(commands.Cog):
             batch_role = discord.utils.get(interaction.guild.roles, name=batch_role_name)
             if batch_role and batch_role in user.roles:
                 roles_to_remove.append(batch_role)
+        
+        # 5. Remove Group role (e.g. VTU-Ascenders-G1)
+        if group_id and batch:
+            verification_cog = self.bot.get_cog("Verification")
+            if verification_cog and hasattr(verification_cog, "_group_role_name"):
+                group_role_name = verification_cog._group_role_name(university or "", batch, str(group_id))
+            else:
+                u, b, g = (university or "").strip(), (batch or "").strip(), str(group_id).strip().upper()
+                group_role_name = f"{u}-{b}-{g}" if u else f"{b}-{g}"
+            group_role = discord.utils.get(interaction.guild.roles, name=group_role_name)
+            if group_role and group_role in user.roles:
+                roles_to_remove.append(group_role)
         
         removed_role_names = [r.name for r in roles_to_remove]
         
@@ -390,11 +417,15 @@ class Admin(commands.Cog):
             embed.add_field(name="Batch", value=batch, inline=True)
         
         embed.add_field(name="Verified", value="✅ Yes" if student.get("is_verified") else "❌ No", inline=True)
+        if student.get("group_id"):
+            embed.add_field(name="Discussion Group", value=f"Group {student['group_id']}", inline=True)
         
         if student.get("discord_id"):
             embed.add_field(name="Discord ID", value=student.get("discord_id"), inline=True)
         if student.get("verified_at"):
-            embed.add_field(name="Verified At", value=student.get("verified_at").strftime("%Y-%m-%d %H:%M UTC"), inline=True)
+            v = student.get("verified_at")
+            display = str(v).replace("T", " ")[:19] if v else "N/A"
+            embed.add_field(name="Verified At", value=display, inline=True)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
     
@@ -403,51 +434,54 @@ class Admin(commands.Cog):
     # ============================================
     @app_commands.command(name="add-student", description="Add a single student to the database (Admin only)")
     @app_commands.describe(
+        name="Student's full name",
         email="Student's email address",
-        name="Student's name",
         university="University code (e.g., 'VTU' or 'GTU')",
         course="Course/Category name (e.g., 'Android App Development')",
-        batch="Batch name (e.g., 'Nomads')"
+        batch="Batch name (e.g., 'Nomads', 'Ascenders')",
+        group="Discussion group (e.g., 'G1', 'G2', 'G3', 'G4', 'G5')"
     )
     @app_commands.default_permissions(administrator=True)
     async def add_student(
-        self, 
-        interaction: discord.Interaction, 
-        email: str,
+        self,
+        interaction: discord.Interaction,
         name: str,
+        email: str,
         university: str,
         course: str,
-        batch: Optional[str] = None
+        batch: str,
+        group: str,
     ):
-        """Add a student to the database"""
+        """Add a student to the database (all CSV fields)."""
         await interaction.response.defer(ephemeral=True)
-        
+
         success = await db.add_student(
-            email.strip().lower(), 
-            name.strip(), 
-            course.strip(),
-            batch.strip() if batch else "",
-            university.strip().upper()
+            email=email.strip().lower(),
+            name=name.strip(),
+            course=course.strip(),
+            batch=batch.strip(),
+            university=university.strip().upper(),
+            group_id=group.strip().upper() if group else "",
         )
-        
+
         if success:
             embed = discord.Embed(
                 title="✅ Student Added",
                 color=config.SUCCESS_COLOR
             )
-            embed.add_field(name="Email", value=email, inline=True)
             embed.add_field(name="Name", value=name, inline=True)
+            embed.add_field(name="Email", value=email, inline=True)
             embed.add_field(name="University", value=university.upper(), inline=True)
             embed.add_field(name="Course", value=course, inline=True)
-            if batch:
-                embed.add_field(name="Batch", value=batch, inline=True)
+            embed.add_field(name="Batch", value=batch, inline=True)
+            embed.add_field(name="Group", value=group.upper() if group else "—", inline=True)
         else:
             embed = discord.Embed(
                 title="❌ Failed to Add",
                 description="Student with this email already exists.",
                 color=config.ERROR_COLOR
             )
-        
+
         await interaction.followup.send(embed=embed, ephemeral=True)
     
     # ============================================

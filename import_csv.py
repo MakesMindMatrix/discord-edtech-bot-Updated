@@ -6,17 +6,21 @@ Usage:
     python import_csv.py
 
 Make sure your CSV file (students.csv) is in the 'data' folder with columns:
-    name, email, university, course, batch
+    Name, Email, University, Course, Batch, Groups
 
 Example:
-    Name,Email id,University,Course,Batch name
-    Joshya,joshya@clinf.com,VTU,Android App Development,Nomads
-    Pragati,pragati@clinf.com,GTU,Data Analytics,Pioneers
+    Name,Email,University,Course,Batch,Groups
+    Joshya,joshya@clinf.com,VTU,Android App Development,Ascenders,G1
+    Pragati,pragati@clinf.com,GTU,Data Analytics,Pioneers,G2
+
+Groups: G1, G2, G3, G4, G5 (from CSV). On duplicate email, group_id is updated.
 """
 
 import sqlite3
 import csv
 import os
+import subprocess
+import sys
 
 # Database and CSV paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -62,6 +66,13 @@ def setup_database():
     except sqlite3.OperationalError:
         pass  # Column already exists
     
+    # Add group_id column (G1, G2, G3, G4, G5 from CSV)
+    try:
+        cursor.execute("ALTER TABLE students ADD COLUMN group_id TEXT")
+        print("✅ Added 'group_id' column to existing database")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
     # Create OTP codes table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS otp_codes (
@@ -94,16 +105,16 @@ def setup_database():
 
 
 def import_csv_data(conn):
-    """Import student data from CSV file"""
+    """Import student data from CSV file. Returns True if import completed, False otherwise."""
     cursor = conn.cursor()
     
     if not os.path.exists(CSV_PATH):
         print(f"\n❌ Error: CSV file not found at: {CSV_PATH}")
         print(f"\nPlease create a file named 'students.csv' in the 'data' folder with this format:")
         print("-" * 70)
-        print("Name,Email id,University,Course,Batch name")
-        print("Joshya,joshya@clinf.com,VTU,Android App Development,Nomads")
-        print("Pragati,pragati@clinf.com,GTU,Data Analytics,Pioneers")
+        print("Name,Email,University,Course,Batch,Groups")
+        print("Joshya,joshya@clinf.com,VTU,Android App Development,Ascenders,G1")
+        print("Pragati,pragati@clinf.com,GTU,Data Analytics,Pioneers,G2")
         print("-" * 70)
         
         # Create sample CSV
@@ -112,7 +123,7 @@ def import_csv_data(conn):
             create_sample_csv()
             print(f"\n✅ Sample CSV created at: {CSV_PATH}")
             print("Edit this file with your actual student data, then run this script again.")
-        return
+        return False
     
     print(f"\n📂 Reading CSV file: {CSV_PATH}")
     
@@ -146,12 +157,13 @@ def import_csv_data(conn):
                     error_count += 1
                     continue
                 
-                # Expected: name, email, university, course, batch (batch is optional)
+                # Expected: name, email, university, course, batch, groups (groups optional)
                 name = row[0].strip()
                 email = row[1].strip().lower()
                 university = row[2].strip().upper() if len(row) > 2 else ""
                 course = row[3].strip() if len(row) > 3 else ""
-                batch = row[4].strip() if len(row) > 4 else None
+                batch = row[4].strip() if len(row) > 4 else ""
+                group_id = (row[5].strip().upper() if len(row) > 5 else "") or None  # G1, G2, G3, G4, G5
                 
                 if not email or not course:
                     print(f"⚠️ Row {row_num}: Skipping (missing email or course)")
@@ -160,10 +172,17 @@ def import_csv_data(conn):
                 
                 try:
                     cursor.execute("""
-                        INSERT INTO students (name, email, university, course, batch)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (name, email, university, course, batch))
-                    success_count += 1
+                        INSERT INTO students (name, email, university, course, batch, group_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(email) DO UPDATE SET
+                            name=excluded.name,
+                            university=excluded.university,
+                            course=excluded.course,
+                            batch=excluded.batch,
+                            group_id=excluded.group_id
+                    """, (name, email, university, course, batch, group_id))
+                    if cursor.rowcount > 0:
+                        success_count += 1
                 except sqlite3.IntegrityError:
                     print(f"⏭️ Duplicate: {email}")
                     duplicate_count += 1
@@ -182,9 +201,11 @@ def import_csv_data(conn):
         cursor.execute("SELECT COUNT(*) FROM students")
         total = cursor.fetchone()[0]
         print(f"\n📈 Total students in database: {total}")
-        
+        return True
+
     except Exception as e:
         print(f"\n❌ Error reading CSV: {e}")
+        return False
 
 
 def create_sample_csv():
@@ -192,11 +213,11 @@ def create_sample_csv():
     os.makedirs(DATA_DIR, exist_ok=True)
     
     sample_data = [
-        ["Name", "Email id", "University", "Course", "Batch name"],
-        ["Joshya", "joshya@example.com", "VTU", "Android App Development", "Nomads"],
-        ["Pragati", "pragati@example.com", "GTU", "Data Analytics", "Pioneers"],
-        ["Sujit Kumar", "sujit@example.com", "VTU", "Android App Development", "Navigants"],
-        ["Tirumal", "tirumal@example.com", "GTU", "Data Analytics", "Pioneers"],
+        ["Name", "Email", "University", "Course", "Batch", "Groups"],
+        ["Joshya", "joshya@example.com", "VTU", "Android App Development", "Ascenders", "G1"],
+        ["Pragati", "pragati@example.com", "GTU", "Data Analytics", "Pioneers", "G2"],
+        ["Sujit Kumar", "sujit@example.com", "VTU", "Android App Development", "Ascenders", "G3"],
+        ["Tirumal", "tirumal@example.com", "GTU", "Data Analytics", "Pioneers", "G4"],
     ]
     
     with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
@@ -221,16 +242,17 @@ def view_students(conn, limit=10):
     
     if total > 0:
         print(f"\n📋 Sample students (first {limit}):")
-        print("-" * 110)
-        print(f"   {'Status':<6} | {'Name':<16} | {'Email':<24} | {'Univ':<5} | {'Course':<20} | {'Batch'}")
-        print("-" * 110)
-        cursor.execute(f"SELECT name, email, university, course, batch, is_verified FROM students LIMIT {limit}")
+        print("-" * 125)
+        print(f"   {'Status':<6} | {'Name':<16} | {'Email':<24} | {'Univ':<5} | {'Batch':<10} | {'Group'}")
+        print("-" * 125)
+        cursor.execute(f"SELECT name, email, university, batch, group_id, is_verified FROM students LIMIT {limit}")
         for row in cursor.fetchall():
             status = "✅" if row[5] else "⏳"
             univ = row[2] or "N/A"
-            batch = row[4] or "N/A"
-            print(f"   {status:<6} | {row[0]:<16} | {row[1]:<24} | {univ:<5} | {row[3]:<20} | {batch}")
-        print("-" * 110)
+            batch = row[3] or "N/A"
+            group = row[4] or "N/A"
+            print(f"   {status:<6} | {row[0]:<16} | {row[1]:<24} | {univ:<5} | {batch:<10} | {group}")
+        print("-" * 125)
 
 
 def main():
@@ -251,7 +273,21 @@ def main():
         choice = input("\nEnter choice (1-4): ").strip()
         
         if choice == "1":
-            import_csv_data(conn)
+            if import_csv_data(conn):
+                print("\n🔄 Running create_sub_batches (create G1–G5 roles/channels, assign students)...")
+                try:
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    result = subprocess.run(
+                        [sys.executable, os.path.join(script_dir, "create_sub_batches.py")],
+                        cwd=script_dir,
+                        capture_output=False,
+                    )
+                    if result.returncode == 0:
+                        print("✅ create_sub_batches finished successfully")
+                    else:
+                        print(f"⚠️ create_sub_batches exited with code {result.returncode}")
+                except Exception as e:
+                    print(f"⚠️ Could not run create_sub_batches: {e}")
         elif choice == "2":
             view_students(conn)
         elif choice == "3":

@@ -127,6 +127,14 @@ ERROR_COLOR = 0xED4245   # Red
 WARNING_COLOR = 0xFEE75C  # Yellow
 
 # ============================================
+# SUB-BATCH / GROUP SETTINGS (from CSV Groups column)
+# ============================================
+# Groups from CSV: G1, G2, G3, G4, G5
+# Role: "{University}-{Batch}-{Group}" (e.g. VTU-Ascenders-G1)
+# Category: "{University} Project Discussion"
+# Channel: vtu-ascenders-g1 (role-based access)
+
+# ============================================
 # RATE LIMITING
 # ============================================
 ROLE_ASSIGN_DELAY = 1.0  # Seconds between role assignments (for bulk operations)
